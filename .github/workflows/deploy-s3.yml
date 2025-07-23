@@ -44,8 +44,11 @@ jobs:
           node --version
           bun --version
 
-      - name: Add Stylus manually to avoid yanked versions
-        run: bun add stylus@0.54.8 --dev
+      - name: Add Stylus using npm fallback
+        run: |
+          corepack enable
+          npm install stylus@0.54.8 --legacy-peer-deps --save-dev
+      
 
       - name: Install dependencies (clean + frozen)
         run: |
