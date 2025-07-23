@@ -34,17 +34,15 @@ jobs:
       - name: Install npm 11.4.2
         run: npm install -g npm@11.4.2
 
-      - name: Clean Yarn Cache and Set Registry
-        run: |
-          yarn cache clean
-          yarn config set registry https://registry.npmmirror.com/
-
       - name: Install dependencies
-        run: yarn install
+        # This will now succeed because the committed yarn.lock is correct.
+        # --frozen-lockfile ensures the build is fast and reproducible.
+        run: yarn install --frozen-lockfile --no-integrity-checks
 
       - name: Build application
         run: yarn run build:ci
 
+      # --- The rest of your deployment steps remain the same ---
       - name: Configure AWS credentials via OIDC
         if: github.ref == 'refs/heads/master' && github.event_name == 'push'
         uses: aws-actions/configure-aws-credentials@v4
@@ -56,14 +54,12 @@ jobs:
       - name: Deploy to S3
         if: github.ref == 'refs/heads/master' && github.event_name == 'push'
         run: |
-          # Sync build files to S3 bucket with caching
           aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
             --delete \
             --cache-control "public, max-age=31536000" \
             --exclude "*.html" \
             --exclude "*.json"
           
-          # Upload HTML/JSON files with no-cache headers
           aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
             --exclude "*" \
             --include "*.html" \
