@@ -62,11 +62,15 @@ jobs:
             --cache-control "no-cache, no-store, must-revalidate"
 
       - name: Invalidate CloudFront (optional)
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push' && secrets.CLOUDFRONT_DISTRIBUTION_ID
+        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
         run: |
-          aws cloudfront create-invalidation \
-            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
-            --paths "/*"
+          if [ ! -z "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" ]; then
+            aws cloudfront create-invalidation \
+              --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+              --paths "/*"
+          else
+            echo "CloudFront distribution ID not configured, skipping invalidation"
+          fi
 
       - name: Output deployment info
         if: github.ref == 'refs/heads/master' && github.event_name == 'push'
