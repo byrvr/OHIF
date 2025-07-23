@@ -44,10 +44,10 @@ jobs:
           node --version
           bun --version
 
-      - name: Add Stylus using npm fallback
+      - name: Override broken Stylus version in CI
         run: |
-          corepack enable
-          npm install stylus@0.54.8 --legacy-peer-deps --save-dev
+          jq '. + {overrides: {stylus: "0.55.0"}}' package.json > tmp && mv tmp package.json
+          bun install --no-cache --frozen-lockfile
       
 
       - name: Install dependencies (clean + frozen)
