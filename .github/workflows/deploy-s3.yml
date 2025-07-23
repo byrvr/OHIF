@@ -44,6 +44,12 @@ jobs:
           node --version
           bun --version
 
+      - name: Check available stylus versions
+        run: |
+          echo "Checking available Stylus versions..."
+          bun pm info stylus | grep 'versions:'
+          npm view stylus versions --json | jq '.versions | length'`
+
       - name: Override broken Stylus version in CI
         run: |
           jq '. + {overrides: {stylus: "0.55.0"}}' package.json > tmp && mv tmp package.json
