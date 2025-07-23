@@ -7,7 +7,7 @@ on:
     branches: [master]
 
 env:
-  NODE_VERSION: 23.9.0
+  NODE_VERSION: 20.x
   AWS_REGION: eu-central-1
   S3_BUCKET: ohif-viewer-obz
 
@@ -18,7 +18,7 @@ jobs:
 
     permissions:
       contents: read
-      id-token: write  # Required for OIDC
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -31,16 +31,18 @@ jobs:
           cache: 'yarn'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Install npm 11.4.2
-        run: npm install -g npm@11.4.2
+      - name: Find and fix unavailable dependency
+        # This is still needed because your committed package.json is wrong
+        run: |
+          grep -rl '"stylus": "^0.59.0"' . | xargs sed -i 's/"stylus": "^0.59.0"/"stylus": "^0.64.0"/'
+          echo "✅ Temporarily updated stylus version."
 
-      - name: Remove Lock File to Force Clean Install
+      - name: Remove Lock File
         run: rm -f yarn.lock
 
-      - name: Install Dependencies from package.json
-        # We are not using --frozen-lockfile because we just deleted the lock file.
-        # This will be slower but will resolve dependencies from the official registry.
-        run: yarn install
+      - name: Install Dependencies (Ignoring Scripts)
+        # This is the key step. It prevents preinstall.js from running.
+        run: yarn install --ignore-scripts
 
       - name: Build application
         run: yarn run build:ci
