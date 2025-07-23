@@ -1,0 +1,42 @@
+name: Generate Correct Lock File
+
+on:
+  # Manually trigger this workflow from the Actions tab
+  workflow_dispatch:
+
+jobs:
+  generate-lock-file:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20' # Using a stable LTS version
+          cache: 'yarn'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Find and Replace unavailable Stylus version
+        # This command finds every package.json in your project and replaces
+        # the bad stylus version with a known good one. This is a temporary
+        # change that only happens inside the CI runner.
+        run: |
+          find . -name 'package.json' -exec sed -i 's/"stylus": "\^0.59.0"/"stylus": "\^0.64.0"/' {} +
+          echo "✅ Temporarily updated stylus version for lock file generation."
+
+      - name: Remove Old Lock File
+        run: rm -f yarn.lock
+
+      - name: Generate New Lock File
+        # This will succeed because we fixed the stylus version
+        run: yarn install
+
+      - name: Upload Correct Lock File
+        # This uploads the newly generated yarn.lock as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: correct-lock-file
+          path: yarn.lock
