@@ -26,6 +26,9 @@ jobs:
         with:
           fetch-depth: 0  # Fetch all Git history for versioning
 
+      - name: Set registry to avoid GitHub proxy cache
+        run: echo "registry=https://registry.npmjs.org" > ~/.npmrc
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -41,8 +44,13 @@ jobs:
           node --version
           bun --version
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Add Stylus manually to avoid yanked versions
+        run: bun add stylus@0.54.8 --dev
+
+      - name: Install dependencies (clean + frozen)
+        run: |
+          bun pm cache clean
+          bun install --no-cache --frozen-lockfile
         env:
           TERM: xterm
 
@@ -116,14 +124,14 @@ jobs:
           find platform/app/dist -name "*.css" -type f -exec gzip -9 -k {} \;
           find platform/app/dist -name "*.map" -type f -exec gzip -9 -k {} \;
           find platform/app/dist -name "*.svg" -type f -exec gzip -9 -k {} \;
-          
+
           echo "Compressed file sizes:"
           find platform/app/dist -name "*.gz" -exec ls -lh {} \;
 
       - name: Deploy static assets to S3
         run: |
           echo "🚀 Starting deployment to S3..."
-          
+
           # Deploy compressed files with appropriate encoding
           aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
             --delete \
@@ -131,7 +139,7 @@ jobs:
             --exclude "*.json" \
             --exclude "*.gz" \
             --cache-control "public, max-age=31536000, immutable"
-          
+
           # Deploy compressed JS, CSS, SVG files with gzip encoding
           aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
             --exclude "*" \
@@ -142,7 +150,7 @@ jobs:
             --content-encoding gzip \
             --cache-control "public, max-age=31536000, immutable" \
             --metadata-directive REPLACE
-          
+
           # Deploy HTML and JSON files with no-cache headers
           aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
             --exclude "*" \
@@ -153,7 +161,6 @@ jobs:
 
       - name: Set correct content types for compressed files
         run: |
-          # Fix content types for gzipped files served without .gz extension
           aws s3 cp s3://${{ env.S3_BUCKET }}/ s3://${{ env.S3_BUCKET }}/ \
             --recursive \
             --exclude "*" \
@@ -162,7 +169,7 @@ jobs:
             --content-encoding gzip \
             --metadata-directive REPLACE \
             --copy-props metadata-directive
-          
+
           aws s3 cp s3://${{ env.S3_BUCKET }}/ s3://${{ env.S3_BUCKET }}/ \
             --recursive \
             --exclude "*" \
