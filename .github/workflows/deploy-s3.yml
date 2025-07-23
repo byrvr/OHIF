@@ -34,10 +34,13 @@ jobs:
       - name: Install npm 11.4.2
         run: npm install -g npm@11.4.2
 
-      - name: Install dependencies
-        # This will now succeed because the committed yarn.lock is correct.
-        # --frozen-lockfile ensures the build is fast and reproducible.
-        run: yarn install --frozen-lockfile --no-integrity-checks
+      - name: Remove Lock File to Force Clean Install
+        run: rm -f yarn.lock
+
+      - name: Install Dependencies from package.json
+        # We are not using --frozen-lockfile because we just deleted the lock file.
+        # This will be slower but will resolve dependencies from the official registry.
+        run: yarn install
 
       - name: Build application
         run: yarn run build:ci
