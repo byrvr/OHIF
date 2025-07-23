@@ -1,4 +1,4 @@
-name: Build and Deploy to S3
+name: Deploy OHIF Viewer to S3
 
 on:
   push:
@@ -7,86 +7,251 @@ on:
     branches: [master]
 
 env:
-  NODE_VERSION: 20.x
+  NODE_VERSION: "20.18.1"
   AWS_REGION: eu-central-1
   S3_BUCKET: ohif-viewer-obz
 
 jobs:
-  build-and-deploy:
+  # Build job - mirrors CircleCI BUILD job
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-
-    permissions:
-      contents: read
-      id-token: write
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all Git history for versioning
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
-          cache: 'yarn'
-          registry-url: 'https://registry.npmjs.org'
 
-      - name: Find and fix unavailable dependency
-        # This is still needed because your committed package.json is wrong
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Verify installation
         run: |
-          grep -rl '"stylus": "^0.59.0"' . | xargs sed -i 's/"stylus": "^0.59.0"/"stylus": "^0.64.0"/'
-          echo "✅ Temporarily updated stylus version."
+          node --version
+          bun --version
 
-      - name: Remove Lock File
-        run: rm -f yarn.lock
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          TERM: xterm
 
-      - name: Install Dependencies (Ignoring Scripts)
-        # This is the key step. It prevents preinstall.js from running.
-        run: yarn install --ignore-scripts
+      - name: Perform versioning before build
+        id: version
+        run: |
+          bun ./version.mjs
+          echo "version=$(cat version.txt 2>/dev/null || echo 'unknown')" >> $GITHUB_OUTPUT
+          echo "commit=$(cat commit.txt 2>/dev/null || echo 'unknown')" >> $GITHUB_OUTPUT
 
-      - name: Build application
-        run: yarn run build:ci
+      - name: Build OHIF Viewer
+        run: bun run build:ci
+        timeout-minutes: 45
+        env:
+          NODE_ENV: production
+          PUBLIC_URL: /
+          APP_CONFIG: config/default.js
+          QUICK_BUILD: false
+          TERM: xterm
 
-      # --- The rest of your deployment steps remain the same ---
+      - name: Verify build output
+        run: |
+          echo "Build completed. Checking output..."
+          ls -la platform/app/dist/
+          echo "Build size:"
+          du -sh platform/app/dist/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ohif-viewer-build
+          path: |
+            platform/app/dist/
+            version.txt
+            commit.txt
+            version.json
+          retention-days: 30
+
+  # Deploy job - only runs on master branch pushes
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC
+
+    environment:
+      name: production
+      url: http://${{ env.S3_BUCKET }}.s3-website.${{ env.AWS_REGION }}.amazonaws.com
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ohif-viewer-build
+
       - name: Configure AWS credentials via OIDC
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          role-session-name: GitHubActions-OHIF-Deploy
+          role-session-name: GitHubActions-OHIF-Deploy-${{ github.run_id }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy to S3
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      - name: Compress files for better performance
         run: |
+          echo "Compressing JavaScript, CSS, and map files..."
+          find platform/app/dist -name "*.js" -type f -exec gzip -9 -k {} \;
+          find platform/app/dist -name "*.css" -type f -exec gzip -9 -k {} \;
+          find platform/app/dist -name "*.map" -type f -exec gzip -9 -k {} \;
+          find platform/app/dist -name "*.svg" -type f -exec gzip -9 -k {} \;
+          
+          echo "Compressed file sizes:"
+          find platform/app/dist -name "*.gz" -exec ls -lh {} \;
+
+      - name: Deploy static assets to S3
+        run: |
+          echo "🚀 Starting deployment to S3..."
+          
+          # Deploy compressed files with appropriate encoding
           aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
             --delete \
-            --cache-control "public, max-age=31536000" \
             --exclude "*.html" \
-            --exclude "*.json"
+            --exclude "*.json" \
+            --exclude "*.gz" \
+            --cache-control "public, max-age=31536000, immutable"
           
+          # Deploy compressed JS, CSS, SVG files with gzip encoding
+          aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
+            --exclude "*" \
+            --include "*.js.gz" \
+            --include "*.css.gz" \
+            --include "*.svg.gz" \
+            --include "*.map.gz" \
+            --content-encoding gzip \
+            --cache-control "public, max-age=31536000, immutable" \
+            --metadata-directive REPLACE
+          
+          # Deploy HTML and JSON files with no-cache headers
           aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}/ \
             --exclude "*" \
             --include "*.html" \
             --include "*.json" \
-            --cache-control "no-cache, no-store, must-revalidate"
+            --cache-control "no-cache, no-store, must-revalidate" \
+            --metadata-directive REPLACE
 
-      - name: Invalidate CloudFront (optional)
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      - name: Set correct content types for compressed files
         run: |
-          if [ ! -z "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" ]; then
-            aws cloudfront create-invalidation \
-              --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
-              --paths "/*"
-          else
-            echo "CloudFront distribution ID not configured, skipping invalidation"
-          fi
+          # Fix content types for gzipped files served without .gz extension
+          aws s3 cp s3://${{ env.S3_BUCKET }}/ s3://${{ env.S3_BUCKET }}/ \
+            --recursive \
+            --exclude "*" \
+            --include "*.js.gz" \
+            --content-type "application/javascript" \
+            --content-encoding gzip \
+            --metadata-directive REPLACE \
+            --copy-props metadata-directive
+          
+          aws s3 cp s3://${{ env.S3_BUCKET }}/ s3://${{ env.S3_BUCKET }}/ \
+            --recursive \
+            --exclude "*" \
+            --include "*.css.gz" \
+            --content-type "text/css" \
+            --content-encoding gzip \
+            --metadata-directive REPLACE \
+            --copy-props metadata-directive
 
-      - name: Output deployment info
-        if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+      - name: Invalidate CloudFront distribution
+        if: vars.CLOUDFRONT_DISTRIBUTION_ID != ''
         run: |
-          echo "🚀 Deployment complete!"
-          echo "S3 Website URL: http://${{ env.S3_BUCKET }}.s3-website.${{ env.AWS_REGION }}.amazonaws.com"
-          if [ ! -z "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" ]; then
-            echo "CloudFront invalidation initiated for distribution: ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}"
+          echo "🔄 Invalidating CloudFront distribution..."
+          INVALIDATION_ID=$(aws cloudfront create-invalidation \
+            --distribution-id ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*" \
+            --query 'Invalidation.Id' \
+            --output text)
+          echo "CloudFront invalidation created: $INVALIDATION_ID"
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo ""
+          echo "📊 Deployment Details:"
+          echo "  • Version: ${{ needs.build.outputs.version }}"
+          echo "  • Commit: ${{ needs.build.outputs.commit }}"
+          echo "  • S3 Bucket: ${{ env.S3_BUCKET }}"
+          echo "  • Region: ${{ env.AWS_REGION }}"
+          echo ""
+          echo "🌐 Access URLs:"
+          echo "  • S3 Website: http://${{ env.S3_BUCKET }}.s3-website.${{ env.AWS_REGION }}.amazonaws.com"
+          if [ ! -z "${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}" ]; then
+            echo "  • CloudFront: https://${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}.cloudfront.net"
           fi
+          echo ""
+          echo "📋 Deployment Info:"
+          aws s3 ls s3://${{ env.S3_BUCKET }}/ --recursive --summarize | tail -2
+
+  # Staging deployment for manual testing (optional)
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    environment:
+      name: staging
+      url: http://${{ env.S3_BUCKET }}-staging.s3-website.${{ env.AWS_REGION }}.amazonaws.com
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ohif-viewer-build
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_STAGING_ROLE_ARN }}
+          role-session-name: GitHubActions-OHIF-Staging-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to staging S3 bucket
+        run: |
+          echo "🚀 Deploying to staging environment..."
+          aws s3 sync platform/app/dist/ s3://${{ env.S3_BUCKET }}-staging/ \
+            --delete \
+            --cache-control "no-cache, no-store"
+
+      - name: Comment PR with staging URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const stagingUrl = `http://${{ env.S3_BUCKET }}-staging.s3-website.${{ env.AWS_REGION }}.amazonaws.com`;
+            const comment = `🚀 **Staging deployment complete!**
+            
+            Preview your changes at: ${stagingUrl}
+            
+            Version: ${{ needs.build.outputs.version }}
+            Commit: ${{ needs.build.outputs.commit }}`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });
