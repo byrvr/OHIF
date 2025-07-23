@@ -48,11 +48,6 @@ jobs:
         run: |
           echo "Checking available Stylus versions..."
           npm view stylus versions --json
-
-      - name: Override broken Stylus version in CI
-        run: |
-          jq '. + {overrides: {stylus: "0.55.0"}}' package.json > tmp && mv tmp package.json
-          bun install --no-cache --frozen-lockfile
       
 
       - name: Install dependencies (clean + frozen)
