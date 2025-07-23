@@ -37,7 +37,7 @@ jobs:
       - name: Clean Yarn Cache and Set Registry
         run: |
           yarn cache clean
-          yarn config set registry https://registry.npmjs.org/
+          yarn config set registry https://registry.npmmirror.com/
 
       - name: Install dependencies
         run: yarn install
